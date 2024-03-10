@@ -2058,12 +2058,12 @@ Body:
           - Index: 612
             Item: Helm_
             Rate: 2
-#          - Index: 613
-#            Item: Gemmed_Sallet
-#            Rate: 3
-#          - Index: 614
-#            Item: Gemmed_Sallet_
-#            Rate: 2
+          - Index: 613
+            Item: Gemmed_Sallet
+            Rate: 3
+          - Index: 614
+            Item: Gemmed_Sallet_
+            Rate: 2
           - Index: 615
             Item: Circlet
             Rate: 3
@@ -2268,9 +2268,9 @@ Body:
           - Index: 682
             Item: Plate_Armor_
             Rate: 1
-#          - Index: 683
-#            Item: Clothes_Of_The_Lord
-#            Rate: 3
+          - Index: 683
+            Item: Clothes_Of_The_Lord
+            Rate: 2
           - Index: 684
             Item: Formal_Suit
             Rate: 2
@@ -9925,9 +9925,9 @@ Body:
           - Index: 587
             Item: Plate_Armor_
             Rate: 7
-#          - Index: 588
-#            Item: Clothes_Of_The_Lord
-#            Rate: 7
+          - Index: 588
+            Item: Clothes_Of_The_Lord
+            Rate: 7
           - Index: 589
             Item: Formal_Suit
             Rate: 7
@@ -10930,6 +10930,18 @@ Body:
 #          - Index: 922
 #            Item: Huuma_Calm_Mind
 #            Rate: 1
+          - Index: 923
+            Item: Crown
+            Rate: 1
+          - Index: 924
+            Item: Corsair
+            Rate: 1
+          - Index: 925
+            Item: Magestic_Goat
+            Rate: 1
+          - Index: 926
+            Item: Tiara
+            Rate: 1
   - Group: XMAS_GIFT
     SubGroups:
       - SubGroup: 1
