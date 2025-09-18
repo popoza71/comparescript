@@ -1,0 +1,783 @@
+From b50ad45a79a6ac4ab693eed997b57ced2d23d727 Mon Sep 17 00:00:00 2001
+From: CosmicTraveler <62945877+CosmicTraveler@users.noreply.github.com>
+Date: Sun, 3 Dec 2023 23:52:22 +0700
+Subject: [PATCH] Char Bonus Custom V1
+
+---
+ conf/battle/misc.conf           |   5 +-
+ db/custom/char_bonus.yml        |  22 ++
+ db/custom/char_bonus_combos.yml |  18 ++
+ src/common/mmo.hpp              |   2 +
+ src/map/atcommand.cpp           |  11 +
+ src/map/battle.cpp              |   2 +
+ src/map/battle.hpp              |   2 +
+ src/map/pc.cpp                  |  54 +++++
+ src/map/pc.hpp                  |  10 +
+ src/map/script_constants.hpp    |   2 +
+ src/map/status.cpp              | 370 ++++++++++++++++++++++++++++++++
+ src/map/status.hpp              |  65 ++++++
+ 12 files changed, 562 insertions(+), 1 deletion(-)
+ create mode 100644 db/custom/char_bonus.yml
+ create mode 100644 db/custom/char_bonus_combos.yml
+
+diff --git a/conf/battle/misc.conf b/conf/battle/misc.conf
+index 37db44c..f8a938e 100644
+--- a/conf/battle/misc.conf
++++ b/conf/battle/misc.conf
+@@ -182,4 +182,7 @@ disp_servervip_msg: no
+ mail_delay: 1000
+ 
+ // Hides items from the player's favorite tab from being sold to a NPC. (Note 1)
+-hide_fav_sell: no
+\ No newline at end of file
++hide_fav_sell: no
++
++// char bonus debug
++char_bonus_debug: yes
+\ No newline at end of file
+diff --git a/db/custom/char_bonus.yml b/db/custom/char_bonus.yml
+new file mode 100644
+index 0000000..fb2cd5f
+--- /dev/null
++++ b/db/custom/char_bonus.yml
+@@ -0,0 +1,22 @@
++###########################################################################
++# Whispering Rain
++###########################################################################
++# Char Bonus DB
++###########################################################################
++
++Header:
++  Type: CHAR_BONUS_DB
++  Version: 1
++
++Body:
++  - Job: Swordman
++    LevelNeed: 99
++    Icon: EFST_PROVOKE
++    BonusScript: |
++      bonus bStr,50;
++      
++  - Job: All
++    LevelNeed: 99
++    Icon: EFST_ENDURE
++    BonusScript: |
++      bonus bMaxSP,10000;
+\ No newline at end of file
+diff --git a/db/custom/char_bonus_combos.yml b/db/custom/char_bonus_combos.yml
+new file mode 100644
+index 0000000..702f089
+--- /dev/null
++++ b/db/custom/char_bonus_combos.yml
+@@ -0,0 +1,18 @@
++###########################################################################
++# Whispering Rain
++###########################################################################
++# Char Bonus COMBO DB
++###########################################################################
++
++Header:
++  Type: CHAR_BOUNS_COMBO_DB
++  Version: 1
++
++Body:
++  - Combos:
++      - Job:
++          - Swordman
++          - Archer
++    LevelNeed: 50
++    Script: |
++      bonus bPow,5;
+\ No newline at end of file
+diff --git a/src/common/mmo.hpp b/src/common/mmo.hpp
+index cabf20d..6e2e3a7 100644
+--- a/src/common/mmo.hpp
++++ b/src/common/mmo.hpp
+@@ -1085,6 +1085,8 @@ enum e_job {
+ 
+ 	JOB_SKY_EMPEROR2 = 4316,
+ 
++	JOB_ALL = 9999,
++
+ 	JOB_MAX,
+ };
+ 
+diff --git a/src/map/atcommand.cpp b/src/map/atcommand.cpp
+index ff5f07b..93962f7 100644
+--- a/src/map/atcommand.cpp
++++ b/src/map/atcommand.cpp
+@@ -1640,6 +1640,17 @@ ACMD_FUNC(baselevelup)
+ 		status_calc_pc(sd, SCO_FORCE);
+ 		level*=-1;
+ 	}
++
++	if(sd->char_bonus.size()){
++		for(int i=0;i<sd->char_bonus.size();i++){
++			if(sd->char_bonus[i].charid == sd->status.char_id){
++				sd->char_bonus[i].level = sd->status.base_level;
++				break;
++			}
++		}
++		status_calc_pc(sd, SCO_FORCE);
++	}
++
+ 	sd->status.base_exp = 0;
+ 	clif_updatestatus(sd, SP_STATUSPOINT);
+ 	clif_updatestatus(sd, SP_TRAITPOINT);
+diff --git a/src/map/battle.cpp b/src/map/battle.cpp
+index 0eb42fd..59d21a1 100644
+--- a/src/map/battle.cpp
++++ b/src/map/battle.cpp
+@@ -10631,6 +10631,8 @@ static const struct _battle_data {
+ 	{ "feature.instance_allow_reconnect",   &battle_config.instance_allow_reconnect,        0,      0,      1,              },
+ #endif
+ 
++	{ "char_bonus_debug",					&battle_config.char_bonus_debug,        		0,      0,      1,              },
++
+ #include <custom/battle_config_init.inc>
+ };
+ 
+diff --git a/src/map/battle.hpp b/src/map/battle.hpp
+index 600e627..7cd1975 100644
+--- a/src/map/battle.hpp
++++ b/src/map/battle.hpp
+@@ -732,6 +732,8 @@ struct Battle_Config
+ 	int feature_banking_state_enforce;
+ 	int instance_allow_reconnect;
+ 
++	int char_bonus_debug;
++
+ #include <custom/battle_config_struct.inc>
+ };
+ 
+diff --git a/src/map/pc.cpp b/src/map/pc.cpp
+index f67cd39..79780ea 100644
+--- a/src/map/pc.cpp
++++ b/src/map/pc.cpp
+@@ -2282,6 +2282,41 @@ bool pc_set_hate_mob(map_session_data *sd, int pos, struct block_list *bl)
+ 	return true;
+ }
+ 
++void load_char_bonus_data(map_session_data &sd) {
++
++    sd.char_bonus.clear();
++    struct s_char_data char_data = {};
++
++    SqlStmt *sql_data = SqlStmt_Malloc(mmysql_handle);
++
++    if (SQL_ERROR == SqlStmt_Prepare(sql_data, "SELECT `char_id`,`class`,`base_level` FROM `char` WHERE `account_id`= %d", sd.status.account_id) || SqlStmt_Execute(sql_data)) {
++        SqlStmt_ShowDebug(sql_data);
++        SqlStmt_Free(sql_data);
++        return;
++    }
++
++    SqlStmt_BindColumn(sql_data, 0, SQLDT_INT, &char_data.charid, 0, NULL, NULL);
++    SqlStmt_BindColumn(sql_data, 1, SQLDT_INT, &char_data.jobid, 0, NULL, NULL);
++    SqlStmt_BindColumn(sql_data, 2, SQLDT_INT, &char_data.level, 0, NULL, NULL);
++
++    int count = SqlStmt_NumRows(sql_data);
++
++    for(int i = 0; i < count && SQL_SUCCESS == SqlStmt_NextRow(sql_data); i++) {
++        sd.char_bonus.push_back(char_data);
++    }
++
++    if(battle_config.char_bonus_debug){
++        ShowDebug("Char Bonus: Account ID: %d | Count: %d\n", sd.status.account_id, sd.char_bonus.size());
++        if(sd.char_bonus.size()){
++            for(const auto &cdata : sd.char_bonus){
++                ShowDebug("Char Bonus: Char ID: %d | Class: %d | Level: %d\n", cdata.charid, cdata.jobid, cdata.level);
++            }
++        }
++    }
++
++    SqlStmt_Free(sql_data);
++}
++
+ /*==========================================
+  * Invoked once after the char/account/account2 registry variables are received. [Skotlex]
+  * We didn't receive item information at this point so DO NOT attempt to do item operations here.
+@@ -2427,6 +2462,8 @@ void pc_reg_received(map_session_data *sd)
+ 		intif_request_achievements(sd->status.char_id);
+ 	}
+ 
++	load_char_bonus_data(*sd); // Load bonus data
++
+ 	if (sd->state.connect_new == 0 && sd->fd) { //Character already loaded map! Gotta trigger LoadEndAck manually.
+ 		sd->state.connect_new = 1;
+ 		clif_parse_LoadEndAck(sd->fd, sd);
+@@ -8088,6 +8125,15 @@ int pc_checkbaselevelup(map_session_data *sd) {
+ 	if (battle_config.pet_lv_rate && sd->pd)	//<Skotlex> update pet's level
+ 		status_calc_pet(sd->pd,SCO_NONE);
+ 
++	if(sd->char_bonus.size()){
++		for(int i=0;i<sd->char_bonus.size();i++){
++			if(sd->char_bonus[i].charid == sd->status.char_id){
++				sd->char_bonus[i].level = sd->status.base_level;
++				break;
++			}
++		}
++	}
++
+ 	clif_updatestatus(sd,SP_STATUSPOINT);
+ 	clif_updatestatus(sd,SP_TRAITPOINT);
+ 	clif_updatestatus(sd,SP_BASELEVEL);
+@@ -15798,6 +15844,14 @@ uint64 CaptchaDatabase::parseBodyNode(const ryml::NodeRef &node) {
+ 	return 1;
+ }
+ 
++void pc_remove_char_bonus(map_session_data *sd)
++{
++	nullpo_retv(sd);
++	for(const auto &bonus : char_bonus_db) {
++		clif_status_load(&sd->bl, bonus.second->icon, 0);
++	}
++}
++
+ /*==========================================
+  * pc Init/Terminate
+  *------------------------------------------*/
+diff --git a/src/map/pc.hpp b/src/map/pc.hpp
+index c37cd4f..ea9bc1a 100644
+--- a/src/map/pc.hpp
++++ b/src/map/pc.hpp
+@@ -374,6 +374,12 @@ struct s_qi_display {
+ 	e_questinfo_markcolor color;
+ };
+ 
++struct s_char_data {
++	int32 charid;
++	int16 jobid;
++	int16 level;
++};
++
+ class map_session_data {
+ public:
+ 	struct block_list bl;
+@@ -485,6 +491,8 @@ public:
+ 	struct s_storage inventory;
+ 	struct s_storage cart;
+ 
++	std::vector<s_char_data> char_bonus;
++
+ 	struct item_data* inventory_data[MAX_INVENTORY]; // direct pointers to itemdb entries (faster than doing item_id lookups)
+ 	short equip_index[EQI_MAX];
+ 	short equip_switch_index[EQI_MAX];
+@@ -1748,6 +1756,8 @@ void pc_macro_detector_disconnect(map_session_data &sd);
+ void pc_macro_reporter_area_select(map_session_data &sd, const int16 x, const int16 y, const int8 radius);
+ void pc_macro_reporter_process(map_session_data &sd, int32 reporter_account_id = -1);
+ 
++void pc_remove_char_bonus(map_session_data *sd);
++
+ #ifdef MAP_GENERATOR
+ void pc_reputation_generate();
+ #endif
+diff --git a/src/map/script_constants.hpp b/src/map/script_constants.hpp
+index 4fdc4e9..9d7ae49 100644
+--- a/src/map/script_constants.hpp
++++ b/src/map/script_constants.hpp
+@@ -258,6 +258,8 @@
+ 
+ 	export_constant(JOB_SKY_EMPEROR2);
+ 
++	export_constant(JOB_ALL);
++
+ 	/* EA jobs */
+ 	export_constant2("EAJL_2_1",JOBL_2_1);
+ 	export_constant2("EAJL_2_2",JOBL_2_2);
+diff --git a/src/map/status.cpp b/src/map/status.cpp
+index ea91f02..e568d5e 100644
+--- a/src/map/status.cpp
++++ b/src/map/status.cpp
+@@ -56,6 +56,8 @@ int current_equip_card_id; /// To prevent card-stacking (from jA) [Skotlex]
+ // We need it for new cards 15 Feb 2005, to check if the combo cards are insrerted into the CURRENT weapon only to avoid cards exploits
+ short current_equip_opt_index; /// Contains random option index of an equipped item. [Secret]
+ 
++std::vector<int> sort_char_bonus;
++
+ uint16 SCDisabled[SC_MAX]; ///< List of disabled SC on map zones. [Cydh]
+ 
+ static unsigned short status_calc_str(struct block_list *,status_change *,int);
+@@ -3742,6 +3744,64 @@ int status_calc_pc_sub(map_session_data* sd, uint8 opt)
+ 		pet_delautobonus(*sd, sd->pd->autobonus3, true);
+ 	}
+ 
++	// clear old SC icons
++	if(char_bonus_db.size()){
++		for(const auto &bonus : char_bonus_db) {
++			if(bonus.second->icon != EFST_BLANK)
++				clif_status_load(&sd->bl, bonus.second->icon, 0);
++		}
++	}
++
++	if(char_bonus_db.size()){
++		for(const auto &bonus : char_bonus_db) {
++			if(sd->status.class_ == bonus.second->jobid && sd->status.base_level >= bonus.second->level) {
++
++				if(bonus.second->icon != EFST_BLANK)
++					clif_status_load(&sd->bl, bonus.second->icon, 1);
++
++				if(bonus.second->script){
++					run_script(bonus.second->script, 0, sd->bl.id,0);
++					if (!calculating)
++						return 1;
++				}
++			}else if(bonus.second->jobid == JOB_ALL && sd->status.base_level >= bonus.second->level) {
++
++				if(bonus.second->icon != EFST_BLANK)
++					clif_status_load(&sd->bl, bonus.second->icon, 1);
++
++				if(bonus.second->script){
++					run_script(bonus.second->script, 0, sd->bl.id,0);
++					if (!calculating)
++						return 1;
++				}
++			}
++		}
++	}
++
++	// char bonus combo
++	if(sd->char_bonus.size() && char_bonus_combo_db.size()){
++		for(const auto &combos : char_bonus_combo_db) {
++			int bonus_check = 0;
++			for(const auto &job_id : combos.second->jobs) {
++				for(const auto &char_data : sd->char_bonus) {
++					if(job_id == char_data.jobid && char_data.level >= combos.second->level) {
++						bonus_check++;
++					}
++					if(bonus_check == combos.second->jobs.size())
++						break;
++				}
++
++				if(bonus_check == combos.second->jobs.size()){
++					if(combos.second->script){
++						run_script(combos.second->script, 0, sd->bl.id,0);
++						if (!calculating)
++							return 1;
++					}
++				}
++			}
++		}
++	}
++
+ 	// Parse equipment
+ 	for (i = 0; i < EQI_MAX; i++) {
+ 		current_equip_item_index = index = sd->equip_index[i]; // We pass INDEX to current_equip_item_index - for EQUIP_SCRIPT (new cards solution) [Lupus]
+@@ -15934,6 +15994,308 @@ void StatusDatabase::loadingFinished(){
+ 
+ StatusDatabase status_db;
+ 
++const std::string CharBonusDatabase::getDefaultLocation() {
++	return std::string(db_path) + "/custom/char_bonus.yml";
++}
++
++/**
++ * Reads and parses an entry from the char_bonus.
++ * @param node: YAML node containing the entry.
++ * @return count of successfully parsed rows
++ */
++uint64 CharBonusDatabase::parseBodyNode(const ryml::NodeRef &node){
++
++	if (!this->nodesExist(node, {"Job","LevelNeed","BonusScript"}))
++		return 0;
++
++	std::string jobname;
++
++	if (!this->asString(node, "Job", jobname))
++		return 0;
++
++	int64 constant;
++
++	if( !script_get_constant(( "JOB_"+jobname).c_str(),&constant)){
++		this->invalidWarning( node["Job"], "Unknown \"%s\" Job.\n",jobname.c_str());
++		return 0;
++	}
++
++	std::shared_ptr<s_char_bonus> char_bonus = this->find(constant);
++	bool exists = char_bonus != nullptr;
++
++	if (!exists) {
++
++		if (!this->nodesExist(node, {"Job"}))
++			return 0;
++
++		char_bonus = std::make_shared<s_char_bonus>();
++		char_bonus->jobid = constant;
++	}
++
++	if (this->nodeExists(node, "LevelNeed")) {
++		int16 level;
++
++		if (!this->asInt16(node, "LevelNeed", level))
++			return 0;
++
++		if(level < 0 || level > MAX_LEVEL){
++			this->invalidWarning(node["LevelNeed"], "LevelNeed %d is out of bounds.\n", level);
++			return 0;
++		}
++
++		char_bonus->level = level;
++	}else{
++		char_bonus->level = 0;
++	}
++
++	if (this->nodeExists(node, "Icon")) {
++		std::string icon_name;
++
++		if (!this->asString(node, "Icon", icon_name))
++			return 0;
++
++		int64 constant;
++
++		if (!script_get_constant(icon_name.c_str(), &constant)) {
++			this->invalidWarning(node["Icon"], "Icon %s is invalid, defaulting to EFST_BLANK.\n", icon_name.c_str());
++			constant = EFST_BLANK;
++		}
++
++		if (constant < EFST_BLANK || constant >= EFST_MAX) {
++			this->invalidWarning(node["Icon"], "Icon %s is out of bounds, defaulting to EFST_BLANK.\n", icon_name.c_str());
++			constant = EFST_BLANK;
++		}
++
++		char_bonus->icon = static_cast<efst_type>(constant);
++	} else {
++		if (!exists)
++			char_bonus->icon = EFST_BLANK;
++	}
++
++	if (this->nodeExists(node, "BonusScript")) {
++		std::string script;
++
++		if (!this->asString(node, "BonusScript", script))
++			return 0;
++
++		if (char_bonus->script) {
++			script_free_code(char_bonus->script);
++			char_bonus->script = nullptr;
++		}
++
++		char_bonus->script = parse_script(script.c_str(), this->getCurrentFile().c_str(), this->getLineNumber(node["BonusScript"]), SCRIPT_IGNORE_EXTERNAL_BRACKETS);
++	} else {
++		if (!exists)
++			char_bonus->script = nullptr;
++	}
++
++	if (!exists) {
++		this->put(char_bonus->jobid, char_bonus);
++	}
++
++	return 1;
++}
++
++CharBonusDatabase char_bonus_db;
++
++void CharBonusDatabase::loadingFinished() {
++
++	sort_char_bonus = {};
++
++	// Populate item_data to refer to the combo
++	for (const auto &entry : *this) {
++		sort_char_bonus.push_back(entry.second->jobid);
++	}
++
++	// sort sort_char_bonus
++	std::sort(sort_char_bonus.begin(), sort_char_bonus.end());
++
++	TypesafeYamlDatabase::loadingFinished();
++}
++
++const std::string CharBonusComboDatabase::getDefaultLocation() {
++	return std::string(db_path) + "/custom/char_bonus_combos.yml";
++}
++
++uint16 CharBonusComboDatabase::find_combo_id( const std::vector<int>& jobs ){
++	for (const auto &it : *this) {
++		if (it.second->jobs == jobs) {
++			return it.first;
++		}
++	}
++	return 0;
++}
++
++/**
++ * Reads and parses an entry from the item_combos.
++ * @param node: YAML node containing the entry.
++ * @return count of successfully parsed rows
++ */
++uint64 CharBonusComboDatabase::parseBodyNode(const ryml::NodeRef& node) {
++	std::vector<std::vector<int>> combos_list;
++
++	if( !this->nodesExist( node, { "Combos" } ) ){
++		return 0;
++	}
++
++	const ryml::NodeRef& combosNode = node["Combos"];
++
++	for (const auto& comboit : combosNode) {
++		static const std::string NodeName = "Job";
++
++		if (!this->nodesExist(comboit, { NodeName })) {
++			return 0;
++		}
++
++		const ryml::NodeRef& comboNode = comboit["Job"];
++
++		if (!comboNode.is_seq()) {
++			this->invalidWarning(comboNode, "%s should be a sequence.\n", NodeName.c_str());
++			return 0;
++		}
++
++		std::vector<int> jobs = {};
++
++		for (const auto it : comboNode) {
++			std::string job_name;
++			c4::from_chars(it.val(), &job_name);
++
++			int64 job_constant;
++
++			if( !script_get_constant(( "JOB_"+job_name).c_str(),&job_constant)){
++				this->invalidWarning(comboNode["Jobs"], "Unknown \"%s\" Job.\n",job_name.c_str());
++				return 0;
++			}
++
++			jobs.push_back(job_constant);
++		}
++
++		if (jobs.empty()) {
++			this->invalidWarning(comboNode, "Empty combo, skipping.\n");
++			return 0;
++		}
++
++		if (jobs.size() < 2) {
++			this->invalidWarning(comboNode, "Not enough jobs for a combo, skipping.\n");
++			return 0;
++		}
++		combos_list.push_back(jobs);
++	}
++
++	if (combos_list.empty()) {
++		this->invalidWarning(combosNode, "No combos defined, skipping.\n");
++		return 0;
++	}
++
++	if (this->nodeExists(node, "Clear")) {
++		bool clear = false;
++
++		if (!this->asBool(node, "Clear", clear))
++			return 0;
++
++		// Remove the combo (if exists)
++		if (clear) {
++			for (const auto& combosit : combos_list) {
++				uint16 id = this->find_combo_id(combosit);
++
++				if (id == 0) {
++					this->invalidWarning(node["Clear"], "Unable to clear the combo.\n");
++					return 0;
++				}
++
++				this->erase(id);
++			}
++
++			return 1;
++		}
++	}
++
++	uint64 count = 0;
++
++	for (const auto &combosit : combos_list) {
++		// Find the id when the combo exists
++		uint16 id = this->find_combo_id(combosit);
++		std::shared_ptr<s_char_bonus_combo> col_combo = this->find(id);
++		bool exists = col_combo != nullptr;
++
++		if (!exists) {
++			col_combo = std::make_shared<s_char_bonus_combo>();
++
++			col_combo->jobs.insert(col_combo->jobs.begin(), combosit.begin(), combosit.end());
++			col_combo->id = ++this->combo_num;
++		}
++
++		if (this->nodeExists(node, "Script")) {
++			std::string script;
++
++			if (!this->asString(node, "Script", script))
++				return 0;
++
++			if (exists) {
++				script_free_code(col_combo->script);
++				col_combo->script = nullptr;
++			}
++			col_combo->script = parse_script(script.c_str(), this->getCurrentFile().c_str(), this->getLineNumber(node["Script"]), SCRIPT_IGNORE_EXTERNAL_BRACKETS);
++		} else {
++			if (!exists) {
++				col_combo->script = nullptr;
++			}
++		}
++
++		if( this->nodeExists( node, "LevelNeed" ) ){
++			uint32 level;
++
++			if( !this->asUInt32(node, "LevelNeed", level ) ){
++				return 0;
++			}
++
++			if( level < 0){
++				this->invalidWarning( node["LevelNeed"], "LevelNeed %d is out of bounds.\n", level );
++				return 0;
++			}
++
++			col_combo->level = level;
++		}else{
++			col_combo->level = 1;
++		}
++
++		if (!exists)
++			this->put( col_combo->id, col_combo );
++
++		count++;
++	}
++
++	return count;
++}
++
++CharBonusComboDatabase char_bonus_combo_db;
++
++static void clean_old_char_bonus()
++{
++	struct s_mapiterator* iter;
++	map_session_data* sd;
++
++	iter = mapit_geteachpc();
++	for( sd = (map_session_data*)mapit_first(iter); mapit_exists(iter); sd = (map_session_data*)mapit_next(iter) ) {
++		pc_remove_char_bonus(sd);
++	}
++
++	mapit_free(iter);
++}
++
++static void apply_char_bouns()
++{
++	struct s_mapiterator* iter;
++	map_session_data* sd;
++
++	iter = mapit_geteachpc();
++	for( sd = (map_session_data*)mapit_first(iter); mapit_exists(iter); sd = (map_session_data*)mapit_next(iter) ) {
++		status_calc_pc(sd,SCO_NONE);
++	}
++
++	mapit_free(iter);
++}
++
+ /**
+  * Sets defaults in tables and starts read db functions
+  * sv_readdb reads the file, outputting the information line-by-line to
+@@ -15976,17 +16338,23 @@ void status_readdb( bool reload ){
+ 	}
+ 
+ 	if( reload ){
++		clean_old_char_bonus();
+ 		size_fix_db.reload();
+ 		refine_db.reload();
+ 		status_db.reload();
+ 		enchantgrade_db.reload();
++		char_bonus_db.reload();
++		char_bonus_combo_db.reload();
+ 	}else{
+ 		size_fix_db.load();
+ 		refine_db.load();
+ 		status_db.load();
+ 		enchantgrade_db.load();
++		char_bonus_db.load();
++		char_bonus_combo_db.load();
+ 	}
+ 	elemental_attribute_db.load();
++	apply_char_bouns();
+ }
+ 
+ /**
+@@ -16013,4 +16381,6 @@ void do_final_status(void) {
+ 	refine_db.clear();
+ 	status_db.clear();
+ 	elemental_attribute_db.clear();
++	char_bonus_db.clear();
++	char_bonus_combo_db.clear();
+ }
+diff --git a/src/map/status.hpp b/src/map/status.hpp
+index 5a99abf..5f29c3f 100644
+--- a/src/map/status.hpp
++++ b/src/map/status.hpp
+@@ -3485,6 +3485,71 @@ unsigned short status_base_atk(const struct block_list *bl, const struct status_
+ // Status changes accessors for StatusChange database
+ uint16 status_efst_get_bl_type(enum efst_type efst);
+ 
++extern std::vector<int> sort_char_bonus;
++
++struct s_char_bonus {
++	uint16 jobid;
++	efst_type icon;
++	int16 level;
++	struct script_code *script;	//Default script for everything.
++
++	~s_char_bonus() {
++		if (this->script){
++			script_free_code(this->script);
++			this->script = nullptr;
++		}
++	}
++};
++
++class CharBonusDatabase : public TypesafeYamlDatabase<uint16, s_char_bonus> {
++public:
++	CharBonusDatabase() : TypesafeYamlDatabase( "CHAR_BONUS_DB", 1 ){
++
++	}
++
++	const std::string getDefaultLocation();
++	uint64 parseBodyNode(const ryml::NodeRef& node);
++	void loadingFinished() override;
++};
++
++extern CharBonusDatabase char_bonus_db;
++
++struct s_char_bonus_combo {
++	uint16 id;
++	std::vector<int> jobs;
++	int16 level;
++	script_code *script;
++
++	~s_char_bonus_combo() {
++		if (this->script) {
++			script_free_code(this->script);
++			this->script = nullptr;
++		}
++
++		this->jobs.clear();
++	}
++};
++
++class CharBonusComboDatabase : public TypesafeYamlDatabase<uint16, s_char_bonus_combo> {
++private:
++	uint16 combo_num;
++	uint16 find_combo_id( const std::vector<int>& jobs);
++
++public:
++	CharBonusComboDatabase() : TypesafeYamlDatabase("CHAR_BOUNS_COMBO_DB", 1) {
++
++	}
++
++	void clear() override{
++		TypesafeYamlDatabase::clear();
++		this->combo_num = 0;
++	}
++	const std::string getDefaultLocation();
++	uint64 parseBodyNode(const ryml::NodeRef& node);
++};
++
++extern CharBonusComboDatabase char_bonus_combo_db;
++
+ void status_readdb( bool reload = false );
+ void do_init_status(void);
+ void do_final_status(void);
+-- 
+2.41.0.windows.1
+
